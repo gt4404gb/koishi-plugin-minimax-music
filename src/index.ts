@@ -17,6 +17,7 @@ interface MusicContext {
   generatedLyrics?: string  // AI 生成的歌词
   generatedTitle?: string  // AI 生成的歌名
   generatedStyleTags?: string  // AI 生成的风格标签
+  wizardMessageIds?: string[]  // 向导消息ID列表，用于完成后撤回
 }
 
 export interface Config {
@@ -408,6 +409,7 @@ export function apply(ctx: Context, config: Config) {
 
   /**
    * 生成音乐核心逻辑
+   * 直接返回 h.audio() 元素，使用 data: URL 协议
    */
   async function generateMusic(
     session: Session,
@@ -417,7 +419,7 @@ export function apply(ctx: Context, config: Config) {
       isInstrumental?: boolean
       lyricsOptimizer?: boolean
     }
-  ): Promise<{ filepath?: string; url?: string; error?: string }> {
+  ): Promise<Element | { error: string }> {
     const startTime = Date.now()
     const { lyrics, isInstrumental = false, lyricsOptimizer = false } = options
 
@@ -502,9 +504,20 @@ export function apply(ctx: Context, config: Config) {
         await fs.promises.writeFile(filepath, buffer)
         logger.info(`音频已保存: ${filepath} (${buffer.length} bytes)`)
 
-        return { filepath }
+        // 直接使用 h.audio() 和 Buffer 发送音频（兼容 QQ RED 等适配器）
+        const mimeType = ext === 'mp3' ? 'audio/mpeg' : ext === 'wav' ? 'audio/wav' : 'audio/x-wav'
+        logger.info(`构建 audio 元素，Buffer 大小: ${buffer.length} bytes`)
+
+        // 返回 h.audio() 元素
+        return h.audio(buffer, mimeType)
       } else {
-        return { url: res.data.audio || undefined }
+        // URL 模式直接使用返回的 URL
+        const audioUrl = res.data.audio
+        if (!audioUrl) {
+          return { error: '未收到音频数据，请重试' }
+        }
+        logger.info(`使用返回的 URL: ${audioUrl.substring(0, 50)}...`)
+        return h.audio(audioUrl)
       }
     } catch (err) {
       if (recallFunc) await recallFunc()
@@ -545,6 +558,22 @@ export function apply(ctx: Context, config: Config) {
     userContexts.delete(userId)
   }
 
+  /**
+   * 撤回所有向导消息
+   */
+  async function recallWizardMessages(session: Session, context: MusicContext): Promise<void> {
+    if (context.wizardMessageIds && context.wizardMessageIds.length > 0) {
+      for (const mid of context.wizardMessageIds) {
+        try {
+          await session.bot.deleteMessage(session.channelId, mid)
+        } catch {
+          // ignore
+        }
+      }
+      logger.info(`已撤回 ${context.wizardMessageIds.length} 条向导消息`)
+    }
+  }
+
   // 帮助文本
   const helpText = `
 🎵 **MiniMax 音乐生成插件使用说明**
@@ -575,11 +604,12 @@ export function apply(ctx: Context, config: Config) {
     const context: MusicContext = {
       prompt: prompt.trim(),
       awaitingChoice: 'type',
+      wizardMessageIds: [],
     }
     setUserContext(userId, context)
 
-    // 询问类型选择
-    await session.send(
+    // 询问类型选择，并保存消息ID用于后续撤回
+    const ids = await session.send(
       `🎵 **音乐生成向导**\n\n` +
       `风格: ${prompt.trim()}\n\n` +
       `请选择生成类型:\n` +
@@ -589,6 +619,7 @@ export function apply(ctx: Context, config: Config) {
       `━━━━━━━━━━━━━━━━\n` +
       `输入 "取消" 可终止操作`
     )
+    context.wizardMessageIds?.push(...(Array.isArray(ids) ? ids : [ids]))
   }
 
   /**
@@ -600,6 +631,13 @@ export function apply(ctx: Context, config: Config) {
 
     if (!context) {
       return // 没有进行中的向导，忽略
+    }
+
+    // 保存用户消息ID，用于后续撤回
+    const userMsgId = (session as any).messageId || (session as any).msgId
+    if (userMsgId) {
+      context.wizardMessageIds = context.wizardMessageIds || []
+      context.wizardMessageIds.push(userMsgId)
     }
 
     const input = text.trim().toLowerCase()
@@ -637,23 +675,22 @@ export function apply(ctx: Context, config: Config) {
     // 纯音乐
     if (input === 'y' || input === '是' || input === 'yes' || input === '1') {
       context.isInstrumental = true
-      clearUserContext(userId)
 
       const result = await generateMusic(session, context.prompt, {
         isInstrumental: true,
       })
 
-      if (result.error) {
+      // 撤回所有向导消息
+      await recallWizardMessages(session, context)
+      clearUserContext(userId)
+
+      // 检查是否为错误对象
+      if ('error' in result) {
         return `❌ ${result.error}`
       }
 
-      if (result.filepath) {
-        return h.audio(result.filepath)
-      }
-      if (result.url) {
-        return h.audio(result.url)
-      }
-      return '❌ 生成失败'
+      // 返回音频元素
+      return result
     }
 
     // 带歌词歌曲
@@ -661,30 +698,29 @@ export function apply(ctx: Context, config: Config) {
       // 如果配置了自动歌词生成，直接生成
       if (config.lyricsOptimizer) {
         context.lyricsOptimizer = true
-        clearUserContext(userId)
 
         const result = await generateMusic(session, context.prompt, {
           lyricsOptimizer: true,
           isInstrumental: false,
         })
 
-        if (result.error) {
+        // 撤回所有向导消息
+        await recallWizardMessages(session, context)
+        clearUserContext(userId)
+
+        // 检查是否为错误对象
+        if ('error' in result) {
           return `❌ ${result.error}`
         }
 
-        if (result.filepath) {
-          return h.audio(result.filepath)
-        }
-        if (result.url) {
-          return h.audio(result.url)
-        }
-        return '❌ 生成失败'
+        // 返回音频元素
+        return result
       }
 
       // 否则询问歌词设置
       context.awaitingChoice = 'lyrics'
 
-      return (
+      const ids = await session.send(
         `🎤 **歌词设置**\n\n` +
         `请选择歌词方式:\n` +
         `━━━━━━━━━━━━━━━━\n` +
@@ -693,6 +729,9 @@ export function apply(ctx: Context, config: Config) {
         `━━━━━━━━━━━━━━━━\n` +
         `输入 "取消" 可终止操作`
       )
+      context.wizardMessageIds?.push(...(Array.isArray(ids) ? ids : [ids]))
+
+      return
     }
 
     // 无效输入
@@ -714,24 +753,23 @@ export function apply(ctx: Context, config: Config) {
     // 自动生成歌词
     if (input === 'n' || input === '否' || input === 'no') {
       context.lyricsOptimizer = true
-      clearUserContext(userId)
 
       const result = await generateMusic(session, context.prompt, {
         lyricsOptimizer: true,
         isInstrumental: false,
       })
 
-      if (result.error) {
+      // 撤回所有向导消息
+      await recallWizardMessages(session, context)
+      clearUserContext(userId)
+
+      // 检查是否为错误对象
+      if ('error' in result) {
         return `❌ ${result.error}`
       }
 
-      if (result.filepath) {
-        return h.audio(result.filepath)
-      }
-      if (result.url) {
-        return h.audio(result.url)
-      }
-      return '❌ 生成失败'
+      // 返回音频元素
+      return result
     }
 
     // 用户输入歌词
@@ -741,7 +779,8 @@ export function apply(ctx: Context, config: Config) {
     if (config.autoOptimizeLyrics) {
       const recallFunc = sendThinkingMessage(session)
 
-      await session.send('✨ 正在使用AI优化歌词格式...')
+      const optimizeMsg = await session.send('✨ 正在使用AI优化歌词格式...')
+      context.wizardMessageIds?.push(...(Array.isArray(optimizeMsg) ? optimizeMsg : [optimizeMsg]))
 
       const optimized = await optimizeLyrics(ctx, config, context.prompt, finalLyrics, logger)
 
@@ -749,7 +788,8 @@ export function apply(ctx: Context, config: Config) {
 
       if (optimized.error) {
         // 优化失败时，使用原始歌词继续
-        await session.send(`⚠️ 歌词优化失败，将使用原始歌词: ${optimized.error}`)
+        const errMsg = await session.send(`⚠️ 歌词优化失败，将使用原始歌词: ${optimized.error}`)
+        context.wizardMessageIds?.push(...(Array.isArray(errMsg) ? errMsg : [errMsg]))
       } else if (optimized.lyrics) {
         finalLyrics = optimized.lyrics
         context.generatedTitle = optimized.title
@@ -766,30 +806,30 @@ export function apply(ctx: Context, config: Config) {
         }
         response += `**歌词预览**:\n\`\`\`\n${optimized.lyrics.substring(0, 200)}${optimized.lyrics.length > 200 ? '...' : ''}\n\`\`\`\n\n正在生成音乐...`
 
-        await session.send(response)
+        const responseMsg = await session.send(response)
+        context.wizardMessageIds?.push(...(Array.isArray(responseMsg) ? responseMsg : [responseMsg]))
       }
     }
 
     context.lyrics = finalLyrics
     context.awaitingChoice = undefined
-    clearUserContext(userId)
 
     const result = await generateMusic(session, context.prompt, {
       lyrics: context.lyrics,
       isInstrumental: false,
     })
 
-    if (result.error) {
+    // 撤回所有向导消息
+    await recallWizardMessages(session, context)
+    clearUserContext(userId)
+
+    // 检查是否为错误对象
+    if ('error' in result) {
       return `❌ ${result.error}`
     }
 
-    if (result.filepath) {
-      return h.audio(result.filepath)
-    }
-    if (result.url) {
-      return h.audio(result.url)
-    }
-    return '❌ 生成失败'
+    // 返回音频元素
+    return result
   }
 
   // 主命令: /music

@@ -50,6 +50,18 @@ plugins:
 
 需要 MiniMax API Key，请前往 [MiniMax 开放平台](https://platform.minimaxi.com/) 申请。
 
+## 更新日志
+
+### v1.0.1
+- 修复音频发送问题：改用 `h.audio(Buffer, mimeType)` 方式直接发送音频，兼容 QQ RED 等适配器
+- 移除 `assets.upload()` 调用，简化音频发送逻辑
+
+### v1.0.0
+- 初始版本
+- 支持纯音乐和带歌词歌曲生成
+- 多轮对话交互向导
+- 自动AI优化歌词功能
+
 ## License
 
 MIT
