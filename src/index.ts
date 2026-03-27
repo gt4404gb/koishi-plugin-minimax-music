@@ -26,6 +26,7 @@ interface MusicContext {
   generatedStyleTags?: string  // AI 生成的风格标签
   wizardMessageIds?: string[]  // 向导消息ID列表，用于完成后撤回
   generating?: boolean  // 是否正在生成音乐，防止重复触发
+  generatingMessageIds?: string[]  // 生成中消息ID，用于生成完成后更新内容
 }
 
 export interface Config {
@@ -452,6 +453,51 @@ export function apply(ctx: Context, config: Config) {
   }
 
   /**
+   * 发送生成中消息 - 包含详细信息，不撤回
+   */
+  async function sendGeneratingMessage(
+    session: Session,
+    context: MusicContext
+  ): Promise<string[]> {
+    const messageIds: string[] = []
+
+    // 撤回之前的向导消息
+    await recallWizardMessages(session, context)
+
+    // 构建包含详细信息的消息
+    let content = '🎵 **音乐生成中**...\n\n'
+
+    if (context.generatedTitle) {
+      content += `**歌名**: ${context.generatedTitle}\n`
+    }
+    if (context.generatedStyleTags) {
+      content += `**风格**: ${context.generatedStyleTags}\n`
+    }
+    if (context.generatedLyrics) {
+      const lyricsPreview = context.generatedLyrics.substring(0, 150)
+      content += `**歌词预览**:\n\`\`\`\n${lyricsPreview}${context.generatedLyrics.length > 150 ? '...' : ''}\n\`\`\`\n`
+    }
+
+    if (!context.generatedTitle && !context.generatedLyrics) {
+      content += `正在处理您的请求，请稍候...\n`
+    }
+
+    content += `\n*（此消息将在生成完成后自动保留）*`
+
+    try {
+      const ids = await session.send(content)
+      messageIds.push(...(Array.isArray(ids) ? ids : [ids]))
+      logger.info('已发送生成中消息，messageIds:', messageIds)
+    } catch (err) {
+      logger.error('发送生成中消息失败:', err)
+    }
+
+    // 保存到 context（不撤回）
+    context.generatingMessageIds = messageIds
+    return messageIds
+  }
+
+  /**
    * 生成音乐核心逻辑
    * 直接返回 h.audio() 元素，使用 data: URL 协议
    */
@@ -513,19 +559,17 @@ export function apply(ctx: Context, config: Config) {
         payload.aigc_watermark = true
       }
 
-      let recallFunc: (() => Promise<void>) | null = null
-
-      // 启动思考消息（异步发送，不阻塞）
-      recallFunc = sendThinkingMessage(session)
-      logger.info('已启动思考消息定时器')
+      // 发送生成中消息（包含详细信息，不撤回）
+      if (config.thinkingMessageEnabled) {
+        await sendGeneratingMessage(session, context)
+      }
 
       const res = await ctx.http.post<GenerateMusicResponse>(MUSIC_API_ENDPOINT, payload, {
         headers,
         timeout: config.requestTimeout * 1000,
       })
 
-      logger.info('API 请求完成，撤回思考消息')
-      if (recallFunc) await recallFunc()
+      logger.info('API 请求完成')
 
       if (!res.base_resp || res.base_resp.status_code !== 0) {
         const code = res.base_resp?.status_code || -1
@@ -640,6 +684,8 @@ export function apply(ctx: Context, config: Config) {
         }
       }
       logger.info(`已撤回 ${context.wizardMessageIds.length} 条向导消息`)
+      // 清空数组，避免重复撤回
+      context.wizardMessageIds = []
     }
   }
 
