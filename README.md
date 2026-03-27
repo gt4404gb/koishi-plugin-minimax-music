@@ -52,6 +52,13 @@ plugins:
 
 ## 更新日志
 
+### v1.0.3
+- 新增 silk 格式转换支持：自动检测并转换音频为 silk 格式，兼容 QQ RED 等适配器
+- 添加 silk-wasm 可选依赖
+
+### v1.0.2
+- 修复模块格式问题，改为 CommonJS 兼容 Koishi 加载
+
 ### v1.0.1
 - 修复音频发送问题：改用 `h.audio(Buffer, mimeType)` 方式直接发送音频，兼容 QQ RED 等适配器
 - 移除 `assets.upload()` 调用，简化音频发送逻辑

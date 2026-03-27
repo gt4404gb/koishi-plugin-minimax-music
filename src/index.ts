@@ -2,6 +2,13 @@ import { Context, Schema, h, Session, Element } from 'koishi'
 import * as fs from 'fs'
 import * as path from 'path'
 
+// silk-wasm 类型声明
+declare module 'silk-wasm' {
+  export function encode(input: ArrayBufferView | ArrayBuffer, sampleRate: number): Promise<{ data: Uint8Array; duration: number }>
+  export function isWav(data: ArrayBufferView | ArrayBuffer): boolean
+  export function getWavFileInfo(data: ArrayBufferView | ArrayBuffer): { fmt: { sampleRate: number } }
+}
+
 export const name = 'minimax-music'
 
 // 命令结果类型
@@ -118,6 +125,40 @@ function getExtension(format: string): string {
     pcm: 'pcm',
   }
   return map[format] || 'mp3'
+}
+
+/**
+ * 将音频转换为 silk 格式（用于 QQ RED 等需要 silk 格式的适配器）
+ */
+async function convertToSilk(audioBuffer: Buffer, mimeType: string, logger: any): Promise<Buffer | null> {
+  try {
+    // 动态导入 silk-wasm
+    const silk = await import('silk-wasm')
+
+    // 如果是 mp3，先尝试直接编码（silk-wasm 支持直接编码）
+    // 否则返回 null，让调用方使用原始格式
+    if (mimeType.includes('mp3') || mimeType.includes('mpeg')) {
+      // mp3 需要先解码为 PCM，这里简化处理，返回 null 使用原始格式
+      logger.info('mp3 格式暂不支持 silk 转换，返回原始格式')
+      return null
+    }
+
+    // 检查是否为 wav 格式
+    if (silk.isWav(audioBuffer)) {
+      const info = silk.getWavFileInfo(audioBuffer)
+      const result = await silk.encode(audioBuffer, info.fmt.sampleRate)
+      logger.info(`转换为 silk 成功，时长: ${result.duration}ms`)
+      return Buffer.from(result.data)
+    }
+
+    // 其他格式，尝试直接编码（假设是 PCM 格式）
+    const result = await silk.encode(audioBuffer, 44100)
+    logger.info(`转换为 silk 成功，时长: ${result.duration}ms`)
+    return Buffer.from(result.data)
+  } catch (err) {
+    logger.warn(`silk 转换失败，使用原始格式: ${err}`)
+    return null
+  }
 }
 
 // 歌词优化固定Prompt模版
@@ -507,6 +548,13 @@ export function apply(ctx: Context, config: Config) {
         // 直接使用 h.audio() 和 Buffer 发送音频（兼容 QQ RED 等适配器）
         const mimeType = ext === 'mp3' ? 'audio/mpeg' : ext === 'wav' ? 'audio/wav' : 'audio/x-wav'
         logger.info(`构建 audio 元素，Buffer 大小: ${buffer.length} bytes`)
+
+        // 尝试转换为 silk 格式（QQ RED 需要）
+        const silkBuffer = await convertToSilk(buffer, mimeType, logger)
+        if (silkBuffer) {
+          logger.info(`使用 silk 格式发送，Buffer 大小: ${silkBuffer.length} bytes`)
+          return h.audio(silkBuffer, 'audio/silk')
+        }
 
         // 返回 h.audio() 元素
         return h.audio(buffer, mimeType)
