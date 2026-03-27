@@ -25,6 +25,7 @@ interface MusicContext {
   generatedTitle?: string  // AI 生成的歌名
   generatedStyleTags?: string  // AI 生成的风格标签
   wizardMessageIds?: string[]  // 向导消息ID列表，用于完成后撤回
+  generating?: boolean  // 是否正在生成音乐，防止重复触发
 }
 
 export interface Config {
@@ -465,48 +466,55 @@ export function apply(ctx: Context, config: Config) {
   ): Promise<Element | { error: string }> {
     const startTime = Date.now()
     const { lyrics, isInstrumental = false, lyricsOptimizer = false } = options
+    const userId = session.userId
+    const context = getUserContext(userId)
 
-    logger.info(`开始生成音乐，prompt: ${prompt.substring(0, 50)}...`)
-
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${config.apiKey}`,
+    // 设置生成状态，防止重复触发
+    if (context) {
+      context.generating = true
     }
-
-    const payload: GenerateMusicPayload = {
-      model: config.model,
-      prompt: prompt,
-      stream: false,
-      output_format: config.outputFormat,
-      audio_setting: {
-        sample_rate: config.sampleRate,
-        bitrate: config.bitrate,
-        format: config.audioFormat,
-      },
-    }
-
-    if (isInstrumental) {
-      if (!config.model.includes('2.5+')) {
-        return { error: '纯音乐模式仅支持 music-2.5+ 模型' }
-      }
-      payload.is_instrumental = true
-    } else {
-      let processedLyrics = lyrics
-      if (processedLyrics) {
-        processedLyrics = cleanLyrics(processedLyrics)
-        payload.lyrics = processedLyrics
-      } else if (lyricsOptimizer || config.lyricsOptimizer) {
-        payload.lyrics_optimizer = true
-      }
-    }
-
-    if (config.aigcWatermark) {
-      payload.aigc_watermark = true
-    }
-
-    let recallFunc: (() => Promise<void>) | null = null
 
     try {
+      logger.info(`开始生成音乐，prompt: ${prompt.substring(0, 50)}...`)
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.apiKey}`,
+      }
+
+      const payload: GenerateMusicPayload = {
+        model: config.model,
+        prompt: prompt,
+        stream: false,
+        output_format: config.outputFormat,
+        audio_setting: {
+          sample_rate: config.sampleRate,
+          bitrate: config.bitrate,
+          format: config.audioFormat,
+        },
+      }
+
+      if (isInstrumental) {
+        if (!config.model.includes('2.5+')) {
+          return { error: '纯音乐模式仅支持 music-2.5+ 模型' }
+        }
+        payload.is_instrumental = true
+      } else {
+        let processedLyrics = lyrics
+        if (processedLyrics) {
+          processedLyrics = cleanLyrics(processedLyrics)
+          payload.lyrics = processedLyrics
+        } else if (lyricsOptimizer || config.lyricsOptimizer) {
+          payload.lyrics_optimizer = true
+        }
+      }
+
+      if (config.aigcWatermark) {
+        payload.aigc_watermark = true
+      }
+
+      let recallFunc: (() => Promise<void>) | null = null
+
       // 启动思考消息（异步发送，不阻塞）
       recallFunc = sendThinkingMessage(session)
       logger.info('已启动思考消息定时器')
@@ -578,8 +586,6 @@ export function apply(ctx: Context, config: Config) {
         return h.audio(audioUrl)
       }
     } catch (err) {
-      if (recallFunc) await recallFunc()
-
       const elapsed = Math.round((Date.now() - startTime) / 1000)
       logger.error(`生成失败 [${elapsed}s]:`, err)
 
@@ -598,6 +604,11 @@ export function apply(ctx: Context, config: Config) {
         return { error: `生成失败: ${err.message}` }
       }
       return { error: '生成失败，请稍后重试' }
+    } finally {
+      // 清理生成状态
+      if (context) {
+        context.generating = false
+      }
     }
   }
 
@@ -699,6 +710,11 @@ export function apply(ctx: Context, config: Config) {
     }
 
     const input = text.trim().toLowerCase()
+
+    // 如果正在生成音乐，忽略新输入
+    if (context.generating) {
+      return '🎵 音乐正在生成中，请稍候...'
+    }
 
     // 处理取消
     if (input === '取消' || input === 'cancel' || input === 'quit') {
