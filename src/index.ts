@@ -461,11 +461,10 @@ export function apply(ctx: Context, config: Config) {
       lyrics?: string
       isInstrumental?: boolean
       lyricsOptimizer?: boolean
-      title?: string
     }
   ): Promise<Element | { error: string }> {
     const startTime = Date.now()
-    const { lyrics, isInstrumental = false, lyricsOptimizer = false, title } = options
+    const { lyrics, isInstrumental = false, lyricsOptimizer = false } = options
 
     logger.info(`开始生成音乐，prompt: ${prompt.substring(0, 50)}...`)
 
@@ -542,26 +541,22 @@ export function apply(ctx: Context, config: Config) {
         await fs.promises.mkdir(config.cacheDir, { recursive: true })
         const buffer = Buffer.from(res.data.audio, 'hex')
         const ext = getExtension(config.audioFormat)
-        // 如果配置为文件形式发送且有标题，使用标题作为文件名
-        const safeTitle = title ? title.replace(/[\/\\:*?"<>|]/g, '_').substring(0, 50) : null
-        const filename = safeTitle
-          ? `${safeTitle}.${ext}`
-          : `music_${Date.now()}_${Math.random().toString(36).substring(7)}.${ext}`
+        const filename = `music_${Date.now()}_${Math.random().toString(36).substring(7)}.${ext}`
         const filepath = path.join(config.cacheDir, filename)
 
         await fs.promises.writeFile(filepath, buffer)
         logger.info(`音频已保存: ${filepath} (${buffer.length} bytes)`)
 
         // 直接使用 h.audio() 和 Buffer 发送音频（兼容 QQ RED 等适配器）
-        const mimeType = ext === 'mp3' ? 'audio/mpeg' : ext === 'wav' ? 'audio/wav' : 'audio/x-wav'
+        // 注意：mp3 使用 audio/mp3 而非 audio/mpeg，以确保文件名为 xxx.mp3 而非 xxx.mpga
+        const mimeType = ext === 'mp3' ? 'audio/mp3' : ext === 'wav' ? 'audio/wav' : 'audio/x-wav'
         logger.info(`构建 audio 元素，Buffer 大小: ${buffer.length} bytes`)
 
         // 如果配置为文件形式发送，使用 h.file() 发送文件附件
         if (config.sendAsFile) {
-          const absolutePath = path.posix.resolve(process.cwd().replace(/\\/g, '/'), filepath.replace(/\\/g, '/'))
-          const fileUrl = 'file://' + absolutePath
-          logger.info(`以文件形式发送，URL: ${fileUrl}`)
-          return h.file(fileUrl)
+          // 使用 data URL 方式发送
+          logger.info(`以文件形式发送，Buffer 大小: ${buffer.length} bytes`)
+          return h.file(buffer, mimeType)
         }
 
         // 尝试转换为 silk 格式（QQ RED 需要）
@@ -880,7 +875,6 @@ export function apply(ctx: Context, config: Config) {
     const result = await generateMusic(session, context.prompt, {
       lyrics: context.lyrics,
       isInstrumental: false,
-      title: context.generatedTitle,
     })
 
     // 撤回所有向导消息

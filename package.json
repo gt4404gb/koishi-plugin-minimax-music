@@ -1,6 +1,6 @@
 {
   "name": "koishi-plugin-minimax-music",
-  "version": "1.0.3-charlie",
+  "version": "1.0.3-delta",
   "description": "MiniMax 音乐生成插件 - 调用 MiniMax API 生成音乐",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
