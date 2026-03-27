@@ -37,6 +37,7 @@ export interface Config {
   aigcWatermark: boolean
   lyricsOptimizer: boolean
   autoOptimizeLyrics: boolean
+  sendAsFile: boolean
   cacheDir: string
   cleanupHours: number
   requestTimeout: number
@@ -74,6 +75,7 @@ export const Config: Schema<Config> = Schema.object({
   aigcWatermark: Schema.boolean().default(false).description('是否添加 AIGC 水印'),
   lyricsOptimizer: Schema.boolean().default(false).description('是否根据 prompt 自动生成歌词'),
   autoOptimizeLyrics: Schema.boolean().default(false).description('是否开启自动AI优化歌词（接收用户歌词后自动调用API进行格式优化）'),
+  sendAsFile: Schema.boolean().default(false).description('是否以文件形式发送音频（适用于 silk 转换失败的环境）'),
   cacheDir: Schema.string().default('data/minimax-music/').description('音频缓存目录'),
   cleanupHours: Schema.number().default(24).description('缓存清理间隔（小时）'),
   requestTimeout: Schema.number().default(600).description('请求超时时间（秒，默认600秒）'),
@@ -548,6 +550,13 @@ export function apply(ctx: Context, config: Config) {
         // 直接使用 h.audio() 和 Buffer 发送音频（兼容 QQ RED 等适配器）
         const mimeType = ext === 'mp3' ? 'audio/mpeg' : ext === 'wav' ? 'audio/wav' : 'audio/x-wav'
         logger.info(`构建 audio 元素，Buffer 大小: ${buffer.length} bytes`)
+
+        // 如果配置为文件形式发送，使用 h.file() 发送文件附件
+        if (config.sendAsFile) {
+          const filename = `music.${ext}`
+          logger.info(`以文件形式发送，文件名: ${filename}`)
+          return h.file(buffer, mimeType, { title: filename })
+        }
 
         // 尝试转换为 silk 格式（QQ RED 需要）
         const silkBuffer = await convertToSilk(buffer, mimeType, logger)
