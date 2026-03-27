@@ -542,7 +542,11 @@ export function apply(ctx: Context, config: Config) {
         await fs.promises.mkdir(config.cacheDir, { recursive: true })
         const buffer = Buffer.from(res.data.audio, 'hex')
         const ext = getExtension(config.audioFormat)
-        const filename = `music_${Date.now()}_${Math.random().toString(36).substring(7)}.${ext}`
+        // 如果配置为文件形式发送且有标题，使用标题作为文件名
+        const safeTitle = title ? title.replace(/[\/\\:*?"<>|]/g, '_').substring(0, 50) : null
+        const filename = safeTitle
+          ? `${safeTitle}.${ext}`
+          : `music_${Date.now()}_${Math.random().toString(36).substring(7)}.${ext}`
         const filepath = path.join(config.cacheDir, filename)
 
         await fs.promises.writeFile(filepath, buffer)
@@ -554,11 +558,10 @@ export function apply(ctx: Context, config: Config) {
 
         // 如果配置为文件形式发送，使用 h.file() 发送文件附件
         if (config.sendAsFile) {
-          // 如果有标题，使用标题作为文件名；否则使用默认文件名
-          const safeTitle = title ? title.replace(/[\/\\:*?"<>|]/g, '_').substring(0, 50) : 'music'
-          const filename = `${safeTitle}.${ext}`
-          logger.info(`以文件形式发送，文件名: ${filename}`)
-          return h.file(buffer, mimeType, { filename })
+          const absolutePath = path.posix.resolve(process.cwd().replace(/\\/g, '/'), filepath.replace(/\\/g, '/'))
+          const fileUrl = 'file://' + absolutePath
+          logger.info(`以文件形式发送，URL: ${fileUrl}`)
+          return h.file(fileUrl)
         }
 
         // 尝试转换为 silk 格式（QQ RED 需要）
