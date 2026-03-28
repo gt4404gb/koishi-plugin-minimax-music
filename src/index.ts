@@ -27,6 +27,7 @@ interface MusicContext {
   wizardMessageIds?: string[]  // 向导消息ID列表，用于完成后撤回
   generating?: boolean  // 是否正在生成音乐，防止重复触发
   generatingMessageIds?: string[]  // 生成中消息ID，用于生成完成后更新内容
+  invalidInputCount?: number  // 无效输入次数，超过2次自动取消
 }
 
 export interface Config {
@@ -464,25 +465,20 @@ export function apply(ctx: Context, config: Config) {
     // 撤回之前的向导消息
     await recallWizardMessages(session, context)
 
-    // 构建包含详细信息的消息
-    let content = '🎵 **音乐生成中**...\n\n'
+    // 构建包含详细信息的消息（纯文本格式）
+    let content = '🎵 音乐生成中...\n\n'
 
     if (context.generatedTitle) {
-      content += `**歌名**: ${context.generatedTitle}\n`
-    }
-    if (context.generatedStyleTags) {
-      content += `**风格**: ${context.generatedStyleTags}\n`
+      content += `歌名: ${context.generatedTitle}\n`
     }
     if (context.generatedLyrics) {
       const lyricsPreview = context.generatedLyrics.substring(0, 150)
-      content += `**歌词预览**:\n\`\`\`\n${lyricsPreview}${context.generatedLyrics.length > 150 ? '...' : ''}\n\`\`\`\n`
+      content += `歌词预览:\n${lyricsPreview}${context.generatedLyrics.length > 150 ? '...' : ''}\n`
     }
 
     if (!context.generatedTitle && !context.generatedLyrics) {
       content += `正在处理您的请求，请稍候...\n`
     }
-
-    content += `\n*（此消息将在生成完成后自动保留）*`
 
     try {
       const ids = await session.send(content)
@@ -695,22 +691,22 @@ export function apply(ctx: Context, config: Config) {
 
   // 帮助文本
   const helpText = `
-🎵 **MiniMax 音乐生成插件使用说明**
+🎵 MiniMax 音乐生成插件使用说明
 
-**命令格式:**
-\`/music <风格描述>\`
+命令格式:
+/music <风格描述>
 
-**示例:**
-- \`/music 流行音乐,欢快,阳光\`
-- \`/music 抒情摇滚\`
+示例:
+- /music 流行音乐,欢快,阳光
+- /music 抒情摇滚
 
-**使用方法:**
-1. 输入 \`/music\` 加风格描述
+使用方法:
+1. 输入 /music 加风格描述
 2. 选择生成纯音乐还是带歌词歌曲
 3. 根据选择完成生成
 
-**其他命令:**
-- \`/music help\` - 显示帮助
+其他命令:
+- /music help - 显示帮助
 `.trim()
 
   /**
@@ -729,12 +725,12 @@ export function apply(ctx: Context, config: Config) {
 
     // 询问类型选择，并保存消息ID用于后续撤回
     const ids = await session.send(
-      `🎵 **音乐生成向导**\n\n` +
+      `🎵 音乐生成向导\n\n` +
       `风格: ${prompt.trim()}\n\n` +
       `请选择生成类型:\n` +
       `━━━━━━━━━━━━━━━━\n` +
-      `1️⃣ 输入 **Y** 或 **是** → 生成纯音乐（无人声）\n` +
-      `2️⃣ 输入 **N** 或 **否** → 生成带歌词歌曲\n` +
+      `1️⃣ 输入 Y 或 是 → 生成纯音乐（无人声）\n` +
+      `2️⃣ 输入 N 或 否 → 生成带歌词歌曲\n` +
       `━━━━━━━━━━━━━━━━\n` +
       `输入 "取消" 可终止操作`
     )
@@ -845,11 +841,11 @@ export function apply(ctx: Context, config: Config) {
       context.awaitingChoice = 'lyrics'
 
       const ids = await session.send(
-        `🎤 **歌词设置**\n\n` +
+        `🎤 歌词设置\n\n` +
         `请选择歌词方式:\n` +
         `━━━━━━━━━━━━━━━━\n` +
-        `1️⃣ 输入 **歌词内容** → 使用自定义歌词\n` +
-        `2️⃣ 输入 **N** 或 **否** → 自动根据风格生成歌词\n` +
+        `1️⃣ 输入歌词内容 → 使用自定义歌词\n` +
+        `2️⃣ 输入 N 或 否 → 自动根据风格生成歌词\n` +
         `━━━━━━━━━━━━━━━━\n` +
         `输入 "取消" 可终止操作`
       )
@@ -858,11 +854,17 @@ export function apply(ctx: Context, config: Config) {
       return
     }
 
-    // 无效输入
+    // 无效输入，计数超过2次自动取消
+    context.invalidInputCount = (context.invalidInputCount || 0) + 1
+    if (context.invalidInputCount >= 2) {
+      await recallWizardMessages(session, context)
+      clearUserContext(userId)
+      return '❌ 输入错误次数过多，已自动取消。请重新开始。'
+    }
     return (
-      `❓ 无效的选择，请重新输入:\n\n` +
-      `1️⃣ 输入 **Y** 或 **是** → 生成纯音乐\n` +
-      `2️⃣ 输入 **N** 或 **否** → 生成带歌词歌曲`
+      `❓ 无效的选择，请重新输入（剩余 ${2 - context.invalidInputCount} 次）:\n\n` +
+      `1️⃣ 输入 Y 或 是 → 生成纯音乐\n` +
+      `2️⃣ 输入 N 或 否 → 生成带歌词歌曲`
     )
   }
 
@@ -917,18 +919,17 @@ export function apply(ctx: Context, config: Config) {
       } else if (optimized.lyrics) {
         finalLyrics = optimized.lyrics
         context.generatedTitle = optimized.title
-        context.generatedStyleTags = optimized.styleTags
+        // 注意：不使用 optimized.styleTags，因为这是从歌词内容推断的
+        // 保持使用原始 prompt，让音乐生成 API 根据 prompt 推断风格
         context.generatedLyrics = optimized.lyrics
 
         // 显示优化结果
         let response = '✨ 歌词格式优化完成!\n\n'
         if (optimized.title) {
-          response += `**歌名**: ${optimized.title}\n`
+          response += `歌名: ${optimized.title}\n`
         }
-        if (optimized.styleTags) {
-          response += `**风格标签**: ${optimized.styleTags}\n`
-        }
-        response += `**歌词预览**:\n\`\`\`\n${optimized.lyrics.substring(0, 200)}${optimized.lyrics.length > 200 ? '...' : ''}\n\`\`\`\n\n正在生成音乐...`
+        // 不显示 styleTags，因为会被歌词内容主导
+        response += `歌词预览:\n${optimized.lyrics.substring(0, 200)}${optimized.lyrics.length > 200 ? '...' : ''}\n\n正在生成音乐...`
 
         const responseMsg = await session.send(response)
         context.wizardMessageIds?.push(...(Array.isArray(responseMsg) ? responseMsg : [responseMsg]))
