@@ -508,10 +508,11 @@ export function apply(ctx: Context, config: Config) {
       lyrics?: string
       isInstrumental?: boolean
       lyricsOptimizer?: boolean
+      title?: string
     }
   ): Promise<Element | { error: string }> {
     const startTime = Date.now()
-    const { lyrics, isInstrumental = false, lyricsOptimizer = false } = options
+    const { lyrics, isInstrumental = false, lyricsOptimizer = false, title } = options
     const userId = session.userId
     const context = getUserContext(userId)
 
@@ -606,9 +607,12 @@ export function apply(ctx: Context, config: Config) {
 
         // 如果配置为文件形式发送，使用 h.file() 发送文件附件
         if (config.sendAsFile) {
-          // 使用 data URL 方式发送
-          logger.info(`以文件形式发送，Buffer 大小: ${buffer.length} bytes`)
-          return h.file(buffer, mimeType)
+          // 使用歌曲标题作为文件名（过滤非法字符）
+          const safeTitle = title || context?.generatedTitle || 'music'
+          const safeFilename = safeTitle.replace(/[\/\\:*?"<>|]/g, '_').substring(0, 50)
+          const filename = `${safeFilename}.${ext}`
+          logger.info(`以文件形式发送，文件名: ${filename}`)
+          return h.file(buffer, mimeType, { filename })
         }
 
         // 尝试转换为 silk 格式（QQ RED 需要）
@@ -937,6 +941,7 @@ export function apply(ctx: Context, config: Config) {
     const result = await generateMusic(session, context.prompt, {
       lyrics: context.lyrics,
       isInstrumental: false,
+      title: context.generatedTitle,
     })
 
     // 撤回所有向导消息
